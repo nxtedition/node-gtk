@@ -18,6 +18,8 @@ pipeline.on('child-added', (element, name) => {
 const src = Gst.ElementFactory.make("videotestsrc", "src1")
 const sink = Gst.ElementFactory.make("autovideosink", "sink1")
 
+src.pattern = 1
+
 pipeline.add(src)
 pipeline.add(sink)
 src.link(sink)

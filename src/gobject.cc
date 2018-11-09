@@ -327,6 +327,64 @@ NAN_METHOD(GObjectToString) {
     g_free(str);
 }
 
+NAN_PROPERTY_QUERY(property_query_handler) {
+    // FIXME: implement this
+    String::Utf8Value _name(property);
+    info.GetReturnValue().Set(Nan::New(0));
+}
+
+NAN_PROPERTY_GETTER(property_get_handler) {
+    String::Utf8Value property_name(property);
+    GObject *gobject = GNodeJS::GObjectFromWrapper (info.This()->ToObject());
+    g_assert(gobject != NULL);
+    if(*property_name) {
+        GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(gobject), *property_name);
+        if (pspec) {
+            // Property is not readable
+            if (!(pspec->flags & G_PARAM_READABLE)) {
+                Nan::ThrowTypeError("property is not readable");
+            }
+            GType value_type = G_TYPE_FUNDAMENTAL(pspec->value_type);
+            GValue gvalue = {0, {{0}}};
+            g_value_init (&gvalue, pspec->value_type);
+            g_object_get_property (gobject, *property_name, &gvalue);
+
+            Local<Value> res = GNodeJS::GValueToV8(&gvalue);
+            if (value_type != G_TYPE_OBJECT && value_type != G_TYPE_BOXED) {
+                g_value_unset(&gvalue);
+            }
+            info.GetReturnValue().Set(res);
+            return;
+        }
+    }
+    // Fallback to defaults
+    info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
+}
+
+NAN_PROPERTY_SETTER(property_set_handler) {
+    String::Utf8Value property_name(property);
+    GObject *gobject = GNodeJS::GObjectFromWrapper (info.This()->ToObject());
+    g_assert(gobject != NULL);
+    GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(gobject), *property_name);
+    if (pspec) {
+        // Property is not readable
+        if (!(pspec->flags & G_PARAM_WRITABLE)) {
+            Nan::ThrowTypeError("property is not writable");
+        }
+        GValue gvalue = {};
+        g_value_init(&gvalue, G_PARAM_SPEC_VALUE_TYPE (pspec));
+        if (GNodeJS::V8ToGValue (&gvalue, value)) {
+            g_object_set_property (gobject, *property_name, &gvalue);
+            RETURN(Nan::True());
+        } else {
+            Nan::ThrowError("ObjectPropertySetter: could not convert value");
+            RETURN(Nan::False());
+        }
+    }
+    // Fallback to defaults
+    info.This()->GetPrototype()->ToObject()->Set(property, value);
+}
+
 Local<FunctionTemplate> GetBaseClassTemplate() {
     static bool isBaseClassCreated = false;
 
@@ -353,6 +411,15 @@ static Local<FunctionTemplate> NewClassTemplate (GIBaseInfo *info, GType gtype) 
     auto tpl = New<FunctionTemplate> (GObjectConstructor, New<External> (info));
     tpl->SetClassName (UTF8(class_name));
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
+
+    v8::Handle<v8::External> info_handle = Nan::New<v8::External>((void *)g_base_info_ref(info));
+    SetNamedPropertyHandler(tpl->InstanceTemplate(),
+                            property_get_handler,
+                            property_set_handler,
+                            property_query_handler,
+                            nullptr,
+                            nullptr,
+                            info_handle);
 
     GIObjectInfo *parent_info = g_object_info_get_parent (info);
     if (parent_info) {
