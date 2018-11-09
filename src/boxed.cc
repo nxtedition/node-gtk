@@ -28,7 +28,59 @@ using Nan::WeakCallbackType;
 namespace GNodeJS {
 
 
+NAN_PROPERTY_QUERY(boxed_property_query_handler) {
+    // FIXME: implement this
+    String::Utf8Value _name(property);
+    info.GetReturnValue().Set(Nan::New(0));
+}
 
+NAN_PROPERTY_GETTER(boxed_property_get_handler) {
+    String::Utf8Value property_name(property);
+    Isolate *isolate = info.GetIsolate();
+
+    Local<Object> boxedWrapper = info.This();
+    if (boxedWrapper->InternalFieldCount() == 0) {
+        Nan::ThrowError("StructFieldGetter: instance is not a boxed");
+        return;
+    }
+    void *boxed = GNodeJS::BoxedFromWrapper(boxedWrapper);
+    v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
+    GIBaseInfo *base_info = (GIBaseInfo *)info_ptr->Value();
+    if (base_info != nullptr) {
+        auto fieldspec = g_struct_info_find_field(base_info, *property_name);
+        if (fieldspec) {
+            GIArgument value;
+            if (!g_field_info_get_field(fieldspec, boxed, &value)) {
+                Nan::ThrowError("Unable to get field (complex types not allowed)");
+                return;
+            }
+            GITypeInfo *field_type = g_field_info_get_type(fieldspec);
+            auto ret = GNodeJS::GIArgumentToV8(field_type, &value);
+            info.GetReturnValue().Set(ret);
+            g_base_info_unref(field_type);
+            return;
+        } else {
+            if (strcmp(g_base_info_get_namespace(base_info), "GLib") == 0 && strcmp(g_base_info_get_name(base_info), "MainLoop") == 0) {
+                info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
+                return;
+            }
+            auto methodspec = g_struct_info_find_method(base_info, *property_name);
+            if (methodspec) {
+                info.GetReturnValue().Set(GNodeJS::MakeFunction(methodspec));
+                return;
+            }
+        }
+    }
+    // Fallback to defaults
+    info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
+}
+
+// NXT-TODO - implement this
+NAN_PROPERTY_SETTER(boxed_property_set_handler) {
+//    String::Utf8Value property_name(property);
+    // Fallback to defaults
+    info.This()->GetPrototype()->ToObject()->Set(property, value);
+}
 
 size_t Boxed::GetSize (GIBaseInfo *boxed_info) {
     GIInfoType i_type = g_base_info_get_type(boxed_info);
@@ -265,6 +317,15 @@ Local<FunctionTemplate> GetBoxedTemplate(GIBaseInfo *info, GType gtype) {
         const char *class_name = g_base_info_get_name (info);
         tpl->SetClassName (UTF8(class_name));
     }
+
+    v8::Handle<v8::External> info_handle = Nan::New<v8::External>((void *)g_base_info_ref(info));
+    SetNamedPropertyHandler(tpl->InstanceTemplate(),
+                            boxed_property_get_handler,
+                            boxed_property_set_handler,
+                            boxed_property_query_handler,
+                            nullptr,
+                            nullptr,
+                            info_handle);
 
     if (gtype == G_TYPE_NONE)
         return tpl;

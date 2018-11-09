@@ -15,15 +15,28 @@ pipeline.on('child-added', (element, name) => {
     console.log('child-added:', element, name)
 })
 
+const bus = pipeline.getBus()
+bus.addSignalWatch()
+bus.on('message', (message) => {
+    if (message.type == Gst.MessageType.STATE_CHANGED) {
+        const states = message.parse_state_changed()
+        console.log("State Changed: %d -> %d", states[0], states[1])
+    }
+})
+
 const src = Gst.ElementFactory.make("videotestsrc", "src1")
 const sink = Gst.ElementFactory.make("autovideosink", "sink1")
-
-src.pattern = 1
 
 pipeline.add(src)
 pipeline.add(sink)
 src.link(sink)
 
 pipeline.setState(Gst.State.PLAYING)
+
+let pattern = true
+setInterval(() => {
+    src.pattern = pattern ? 1 : 0
+    pattern = !pattern
+}, 1000);
 
 mainLoop.run()
