@@ -508,8 +508,10 @@ static Local<FunctionTemplate> NewFunctionTemplate(GIBaseInfo *info, GType gtype
     int num_methods = g_object_info_get_n_methods(info);
     for (int i = 0; i < num_methods; i++) {
         GIFunctionInfo *method_info = g_object_info_get_method(info, i);
-        auto method_name = Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(method_info)));
-        Nan::SetTemplate(tpl, method_name.c_str(), GNodeJS::MakeFunctionTemplate(method_info));
+        if (!(g_function_info_get_flags(method_info) & GI_FUNCTION_IS_METHOD)) {
+            auto method_name = Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(method_info)));
+            Nan::SetTemplate(tpl, method_name.c_str(), GNodeJS::MakeFunctionTemplate(method_info));
+        }
         g_base_info_unref(method_info);
     }
 
