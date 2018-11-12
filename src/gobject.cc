@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "boxed.h"
+#include "callback.h"
 #include "closure.h"
 #include "debug.h"
 #include "function.h"
@@ -33,7 +34,7 @@ static Nan::Persistent<FunctionTemplate> baseTemplate;
 
 static void GObjectDestroyed(const v8::WeakCallbackInfo<GObject> &data);
 
-static Local<FunctionTemplate> GetClassTemplateFromGI(GIBaseInfo *info);
+static Local<v8::FunctionTemplate> GetObjectFunctionTemplate(GIBaseInfo *info);
 
 static bool InitGParameterFromProperty(GParameter    *parameter,
                                        void          *klass,
@@ -127,8 +128,8 @@ static void GObjectConstructor(const FunctionCallbackInfo<Value> &info) {
      * user code doing `new Gtk.Widget({ ... })`, and
      * internal code as part of WrapperFromGObject, where
      * the constructor is called with one external. */
-
     if (!info.IsConstructCall ()) {
+        log("Not a construct call.");
         Nan::ThrowTypeError("Not a construct call.");
         return;
     }
@@ -298,6 +299,98 @@ static void SignalDisconnectInternal(const Nan::FunctionCallbackInfo<v8::Value> 
     info.GetReturnValue().Set((double)handler_id);
 }
 
+std::vector<std::string> getPropertyListForObject(const GIObjectInfo& arg_object_info) {
+    std::vector<std::string> property_list = {};
+    GIObjectInfo object_info(arg_object_info);
+    int num_properties = g_object_info_get_n_properties(&object_info);
+    for (int i = 0; i < num_properties; i++) {
+        GIPropertyInfo *prop = g_object_info_get_property(&object_info, i);
+        property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+        g_base_info_unref(prop);
+    }
+    int num_methods = g_object_info_get_n_methods(&object_info);
+    for (int i = 0; i < num_methods; i++) {
+        GIFunctionInfo *prop = g_object_info_get_method(&object_info, i);
+        property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+        g_base_info_unref(prop);
+    }
+    int num_constants = g_object_info_get_n_constants(&object_info);
+    for (int i = 0; i < num_constants; i++) {
+        GIConstantInfo *prop = g_object_info_get_constant(&object_info, i);
+        property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+        g_base_info_unref(prop);
+    }
+
+    int num_interfaces = g_object_info_get_n_interfaces(&object_info);
+    for (int i = 0; i < num_interfaces; i++) {
+        GIInterfaceInfo *interface_info = g_object_info_get_interface(&object_info, i);
+
+        int num_properties = g_interface_info_get_n_properties(interface_info);
+        for (int i = 0; i < num_properties; i++) {
+            GIPropertyInfo *prop = g_interface_info_get_property(interface_info, i);
+            property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+            g_base_info_unref(prop);
+        }
+        int num_methods = g_interface_info_get_n_methods(interface_info);
+        for (int i = 0; i < num_methods; i++) {
+            GIFunctionInfo *prop = g_interface_info_get_method(interface_info, i);
+            property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+            g_base_info_unref(prop);
+        }
+        int num_constants = g_interface_info_get_n_constants(interface_info);
+        for (int i = 0; i < num_constants; i++) {
+            GIConstantInfo *prop = g_interface_info_get_constant(interface_info, i);
+            property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+            g_base_info_unref(prop);
+        }
+        g_base_info_unref(interface_info);
+    }
+
+    GIObjectInfo* parent_info = g_object_info_get_parent(&object_info);
+    if (parent_info != NULL) {
+        auto parent_property_list = getPropertyListForObject(*parent_info);
+        property_list.insert(property_list.end(), std::make_move_iterator(parent_property_list.begin()), std::make_move_iterator(parent_property_list.end()));
+    }
+
+    return property_list;
+}
+
+GIFunctionInfo* g_object_info_find_method_recursive(GIObjectInfo* object_info, const char* property_name) {
+    GIFunctionInfo* function_info = g_object_info_find_method(object_info, property_name);
+    if (function_info == nullptr) {
+        GIObjectInfo* parent_info = g_object_info_get_parent(object_info);
+        if (parent_info != nullptr) {
+            function_info = g_object_info_find_method_recursive(parent_info, property_name);
+            g_base_info_unref(parent_info);
+        }
+    }
+    return function_info;
+}
+
+GIPropertyInfo* g_object_info_find_property(GIObjectInfo* object_info, const char *property_name) {
+    int num_properties = g_object_info_get_n_properties(object_info);
+    for (int i = 0; i < num_properties; i++) {
+        GIPropertyInfo *prop = g_object_info_get_property(object_info, i);
+        if (strcmp(g_base_info_get_name(prop), property_name) == 0) {
+            return prop;
+        }
+        g_base_info_unref(prop);
+    }
+    return nullptr;
+}
+
+GIPropertyInfo* g_object_info_find_property_recursive(GIObjectInfo* object_info, const char* property_name) {
+    GIPropertyInfo* property_info = g_object_info_find_property(object_info, property_name);
+    if (property_info == nullptr) {
+        GIObjectInfo* parent_info = g_object_info_get_parent(object_info);
+        if (parent_info != nullptr) {
+            property_info = g_object_info_find_property_recursive(parent_info, property_name);
+            g_base_info_unref(parent_info);
+        }
+    }
+    return property_info;
+}
+
 NAN_METHOD(SignalConnect) {
     SignalConnectInternal(info, false);
 }
@@ -326,84 +419,133 @@ NAN_METHOD(GObjectToString) {
     info.GetReturnValue().Set(UTF8(str));
     g_free(str);
 }
+NAN_PROPERTY_ENUMERATOR(property_enumerator_handler) {
+    v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
+    GIBaseInfo *base_info = (GIBaseInfo *)info_ptr->Value();
+    if (base_info == NULL) {
+        info.GetReturnValue().Set(Nan::New<v8::Array>());
+        return;
+    }
+    // TODO: Cache this!
+    auto property_list = getPropertyListForObject(*base_info);
+    std::sort(property_list.begin(), property_list.end());
+    auto v8_property_list = Nan::New<v8::Array>(property_list.size());
+    int i = 0;
+    for(std::string property_name : property_list) {
+        Nan::Set(v8_property_list, i, UTF8(property_name));
+        i++;
+    }
+    info.GetReturnValue().Set(v8_property_list);
+}
 
 NAN_PROPERTY_QUERY(property_query_handler) {
     // FIXME: implement this
-    String::Utf8Value _name(property);
+    String::Utf8Value _name(info.GetIsolate(), property);
     info.GetReturnValue().Set(Nan::New(0));
 }
 
 NAN_PROPERTY_GETTER(property_get_handler) {
-    String::Utf8Value property_name(property);
-    GObject *gobject = GNodeJS::GObjectFromWrapper (info.This()->ToObject());
-    g_assert(gobject != NULL);
-    if(*property_name) {
-        GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(gobject), *property_name);
-        if (pspec) {
-            // Property is not readable
-            if (!(pspec->flags & G_PARAM_READABLE)) {
-                Nan::ThrowTypeError("property is not readable");
+    String::Utf8Value property_name_v8(info.GetIsolate(), property);
+    if (*property_name_v8) {
+        std::string property_name = Util::camelCaseToSnakeCase(*property_name_v8);
+        v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
+        GIObjectInfo* object_info = (GIObjectInfo*)info_ptr->Value();
+        if (object_info != NULL) {
+            /*if (strcmp(*property_name_v8, "constructor") == 0) {
+                v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
+                GIObjectInfo* object_info = (GIObjectInfo*)info_ptr->Value();
+                log("constructor: %s", g_base_info_get_name(object_info));
+                auto tpl = GetObjectFunctionTemplate(object_info);
+                //Local<Function> constructor = tpl->GetFunction();
+                //Local<Value> args[] = { info_ptr };
+                //Local<Object> obj = Nan::NewInstance(constructor, 1, args).ToLocalChecked();
+                info.GetReturnValue().Set(tpl->GetFunction());
+                return;
+            }*/
+            if (strcmp(*property_name_v8, "__gtype__") == 0) {
+                GObject *gobject = GNodeJS::GObjectFromWrapper(info.This()->ToObject());
+                info.GetReturnValue().Set(Nan::New<Number>(G_OBJECT_TYPE(gobject)));
+                return;
             }
-            GType value_type = G_TYPE_FUNDAMENTAL(pspec->value_type);
-            GValue gvalue = {0, {{0}}};
-            g_value_init (&gvalue, pspec->value_type);
-            g_object_get_property (gobject, *property_name, &gvalue);
+            // TODO: Refactor
+            GIPropertyInfo* property_info = g_object_info_find_property_recursive(object_info, property_name.c_str());
+            if (property_info != NULL) {
+                GObject *gobject = GNodeJS::GObjectFromWrapper(info.This()->ToObject());
+                if (gobject != NULL) {
+                    GParamSpec *param_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(gobject), property_name.c_str());
+                    if (param_spec) {
+                        if (!(param_spec->flags & G_PARAM_READABLE)) {
+                            info.GetReturnValue().Set(Nan::Undefined());
+                            return;
+                        }
+                        GType value_type = G_TYPE_FUNDAMENTAL(param_spec->value_type);
+                        GValue gvalue = {0, {{0}}};
+                        g_value_init(&gvalue, param_spec->value_type);
+                        g_object_get_property(gobject, property_name.c_str(), &gvalue);
+                        Local<Value> v8_value = GNodeJS::GValueToV8(&gvalue);
+                        if (value_type != G_TYPE_OBJECT && value_type != G_TYPE_BOXED) {
+                            g_value_unset(&gvalue);
+                        }
+                        info.GetReturnValue().Set(v8_value);
+                        return;
+                    }
+                }
+            }
 
-            Local<Value> res = GNodeJS::GValueToV8(&gvalue);
-            if (value_type != G_TYPE_OBJECT && value_type != G_TYPE_BOXED) {
-                g_value_unset(&gvalue);
+            GIFunctionInfo* function_info = g_object_info_find_method_recursive(object_info, property_name.c_str());
+            if (function_info != NULL) {
+                info.GetReturnValue().Set(GNodeJS::MakeFunction(function_info));
+                return;
             }
-            info.GetReturnValue().Set(res);
-            return;
+
         }
     }
-    // Fallback to defaults
+    //log("default %s", *property_name_v8);
     info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
 }
 
 NAN_PROPERTY_SETTER(property_set_handler) {
-    String::Utf8Value property_name(property);
-    GObject *gobject = GNodeJS::GObjectFromWrapper (info.This()->ToObject());
-    g_assert(gobject != NULL);
-    GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(gobject), *property_name);
-    if (pspec) {
-        // Property is not readable
-        if (!(pspec->flags & G_PARAM_WRITABLE)) {
-            Nan::ThrowTypeError("property is not writable");
-        }
-        GValue gvalue = {};
-        g_value_init(&gvalue, G_PARAM_SPEC_VALUE_TYPE (pspec));
-        if (GNodeJS::V8ToGValue (&gvalue, value)) {
-            g_object_set_property (gobject, *property_name, &gvalue);
-            RETURN(Nan::True());
-        } else {
-            Nan::ThrowError("ObjectPropertySetter: could not convert value");
-            RETURN(Nan::False());
+    String::Utf8Value property_name(info.GetIsolate(), property);
+    if (strcmp(*property_name, "constructor") != 0) {
+        GObject *gobject = GNodeJS::GObjectFromWrapper (info.This()->ToObject());
+        if (gobject != NULL) {
+            GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(gobject), *property_name);
+            if (pspec) {
+                // Property is not readable
+                if (!(pspec->flags & G_PARAM_WRITABLE)) {
+                    Nan::ThrowTypeError("property is not writable");
+                }
+                GValue gvalue = {};
+                g_value_init(&gvalue, G_PARAM_SPEC_VALUE_TYPE (pspec));
+                if (GNodeJS::V8ToGValue (&gvalue, value)) {
+                    g_object_set_property (gobject, *property_name, &gvalue);
+                    RETURN(Nan::True());
+                } else {
+                    Nan::ThrowError("ObjectPropertySetter: could not convert value");
+                    RETURN(Nan::False());
+                }
+            }
         }
     }
     // Fallback to defaults
     info.This()->GetPrototype()->ToObject()->Set(property, value);
 }
 
-Local<FunctionTemplate> GetBaseClassTemplate() {
+Local<FunctionTemplate> GetObjectFunctionRootTemplate() {
     static bool isBaseClassCreated = false;
-
     if (!isBaseClassCreated) {
         isBaseClassCreated = true;
-
         Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>();
         Nan::SetPrototypeMethod(tpl, "connect", SignalConnect);
         Nan::SetPrototypeMethod(tpl, "disconnect", SignalDisconnect);
         Nan::SetPrototypeMethod(tpl, "toString", GObjectToString);
         baseTemplate.Reset(tpl);
     }
-
-    // get FunctionTemplate from persistent object
     Local<FunctionTemplate> tpl = Nan::New(baseTemplate);
     return tpl;
 }
 
-static Local<FunctionTemplate> NewClassTemplate (GIBaseInfo *info, GType gtype) {
+static Local<FunctionTemplate> NewFunctionTemplate (GIBaseInfo *info, GType gtype) {
     g_assert(gtype != G_TYPE_NONE);
 
     const char *class_name = g_type_name (gtype);
@@ -413,61 +555,65 @@ static Local<FunctionTemplate> NewClassTemplate (GIBaseInfo *info, GType gtype) 
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
     v8::Handle<v8::External> info_handle = Nan::New<v8::External>((void *)g_base_info_ref(info));
-    SetNamedPropertyHandler(tpl->InstanceTemplate(),
+    Nan::SetNamedPropertyHandler(tpl->InstanceTemplate(),
                             property_get_handler,
                             property_set_handler,
                             property_query_handler,
                             nullptr,
-                            nullptr,
+                            property_enumerator_handler,
                             info_handle);
 
-    GIObjectInfo *parent_info = g_object_info_get_parent (info);
+    // This is so we can access static methods, not sure if there are static properties to add...
+    int num_methods = g_object_info_get_n_methods(info);
+    for (int i = 0; i < num_methods; i++) {
+        GIFunctionInfo *method_info = g_object_info_get_method(info, i);
+        auto method_name = Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(method_info)));
+        Nan::SetTemplate(tpl, method_name.c_str(), GNodeJS::MakeFunctionTemplate(method_info));
+        g_base_info_unref(method_info);
+    }
+
+    GIObjectInfo *parent_info = g_object_info_get_parent(info);
     if (parent_info) {
-        auto parent_tpl = GetClassTemplateFromGI ((GIBaseInfo *) parent_info);
+        auto parent_tpl = GetObjectFunctionTemplate((GIBaseInfo *) parent_info);
         tpl->Inherit(parent_tpl);
     } else {
-        tpl->Inherit(GetBaseClassTemplate());
+        tpl->Inherit(GetObjectFunctionRootTemplate());
     }
 
     return tpl;
 }
 
-static Local<FunctionTemplate> GetClassTemplate(GIBaseInfo *gi_info, GType gtype) {
-    void *data = g_type_get_qdata (gtype, GNodeJS::template_quark());
-
+static Local<v8::FunctionTemplate> GetObjectFunctionTemplate(GIBaseInfo *gi_info) {
+    GType gtype = g_registered_type_info_get_g_type ((GIRegisteredTypeInfo *) gi_info);
+/*    void *data = g_type_get_qdata (gtype, GNodeJS::template_quark());
     if (data) {
         auto *persistent = (Persistent<FunctionTemplate> *) data;
         auto tpl = New<FunctionTemplate> (*persistent);
         return tpl;
-    }
-
-    if (gi_info == NULL)
+    }*/
+    if (gi_info == NULL) {
         gi_info = g_irepository_find_by_gtype(NULL, gtype);
-
+    }
     assert_printf (gi_info != NULL, "Missing GIR info for: %s\n", g_type_name (gtype));
+    auto tpl = NewFunctionTemplate(gi_info, gtype);
 
-    auto tpl = NewClassTemplate(gi_info, gtype);
     auto *persistent = new Persistent<FunctionTemplate>(Isolate::GetCurrent(), tpl);
-    persistent->SetWeak (
-            g_base_info_ref (gi_info),
+    persistent->SetWeak(
+            g_base_info_ref(gi_info),
             GNodeJS::ClassDestroyed,
             WeakCallbackType::kParameter);
-
-    g_type_set_qdata(gtype, GNodeJS::template_quark(), persistent);
+    //g_type_set_qdata(gtype, GNodeJS::template_quark(), persistent);
     return tpl;
 }
 
-static Local<FunctionTemplate> GetClassTemplateFromGI(GIBaseInfo *info) {
-    GType gtype = g_registered_type_info_get_g_type ((GIRegisteredTypeInfo *) info);
-    return GetClassTemplate(info, gtype);
-}
-
-Local<Function> MakeClass(GIBaseInfo *info) {
-    auto tpl = GetClassTemplateFromGI (info);
-    return tpl->GetFunction ();
+Local<Object> MakeClass(GIBaseInfo *info) {
+    //log("MakeClass %s", g_base_info_get_name(info));
+    auto tpl = GetObjectFunctionTemplate(info);
+    return Nan::GetFunction(tpl).ToLocalChecked();
 }
 
 Local<Value> WrapperFromGObject(GObject *gobject, GIBaseInfo *object_info) {
+    //log("WrapperFromGObject %s", g_base_info_get_name(object_info));
     if (gobject == NULL)
         return Nan::Null();
 
@@ -480,8 +626,8 @@ Local<Value> WrapperFromGObject(GObject *gobject, GIBaseInfo *object_info) {
         return obj;
 
     } else {
-        auto tpl = GetClassTemplateFromGI(object_info);
-        Local<Function> constructor = tpl->GetFunction ();
+        auto tpl = GetObjectFunctionTemplate(object_info);
+        Local<Function> constructor = tpl->GetFunction();
         Local<Value> gobject_external = New<External> (gobject);
         Local<Value> args[] = { gobject_external };
         Local<Object> obj = Nan::NewInstance(constructor, 1, args).ToLocalChecked();

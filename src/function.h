@@ -57,8 +57,8 @@ Local<Value> FunctionCall (FunctionInfo *func, const Nan::FunctionCallbackInfo<V
 void FunctionInvoker (const Nan::FunctionCallbackInfo<Value> &info);
 void FunctionDestroyed (const v8::WeakCallbackInfo<FunctionInfo> &data);
 
-Local<Function>      MakeFunction (GIBaseInfo *base_info);
+Local<Function> MakeFunction (GIBaseInfo *base_info);
+Local<FunctionTemplate> MakeFunctionTemplate (GIBaseInfo *base_info);
 MaybeLocal<Function> MakeVirtualFunction(GIBaseInfo *info, GType implementor);
-
 
 };

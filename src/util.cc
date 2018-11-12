@@ -10,6 +10,7 @@
 #include <girepository.h>
 #include <glib-object.h>
 
+#include <regex>
 #include "util.h"
 
 using v8::Local;
@@ -18,6 +19,46 @@ using v8::Object;
 using v8::String;
 
 namespace Util {
+
+std::string hyphenCaseToSnakeCase(const std::string& input) {
+    std::string output = input;
+    std::replace( output.begin(), output.end(), '-', '_');
+    return output;
+}
+
+std::string snakeCaseToCamelCase(const std::string& input) {
+    std::string output = input;
+    int n = output.length();
+    int res_ind = 0;
+    for (int i = 0; i < n; i++) {
+        if (output[i] == '_') {
+            output[i + 1] = toupper(output[i + 1]);
+            continue;
+        } else {
+            output[res_ind++] = output[i];
+        }
+    }
+    output.erase(res_ind, n);
+    if (output[0]) {
+        output[0] = tolower(output[0]);
+    }
+    return output;
+}
+
+std::string camelCaseToSnakeCase(std::string &&camelCase) {
+    std::string str(1, tolower(camelCase[0]));
+
+    // First place underscores between contiguous lower and upper case letters.
+    // For example, `_LowerCamelCase` becomes `_Lower_Camel_Case`.
+    for (auto it = camelCase.begin() + 1; it != camelCase.end(); ++it) {
+      if (isupper(*it) && *(it-1) != '_' && islower(*(it-1))) {
+        str += "_";
+      }
+      str += *it;
+    }
+    std::transform(str.begin(), str.end(), str.begin(), ::tolower);
+    return str;
+}
 
 const char* ArrayTypeToString (GIArrayType array_type) {
     switch (array_type) {

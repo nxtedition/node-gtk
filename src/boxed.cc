@@ -27,6 +27,42 @@ using Nan::WeakCallbackType;
 
 namespace GNodeJS {
 
+std::vector<std::string> getPropertyListForStruct(const GIObjectInfo& arg_object_info) {
+    std::vector<std::string> property_list = {};
+    GIObjectInfo object_info(arg_object_info);
+    int num_methods = g_struct_info_get_n_methods(&object_info);
+    for (int i = 0; i < num_methods; i++) {
+        GIFunctionInfo *prop = g_struct_info_get_method(&object_info, i);
+        property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+        g_base_info_unref(prop);
+    }
+    int num_fields = g_struct_info_get_n_fields(&object_info);
+    for (int i = 0; i < num_fields; i++) {
+        GIFieldInfo *prop = g_struct_info_get_field(&object_info, i);
+        property_list.push_back(Util::snakeCaseToCamelCase(Util::hyphenCaseToSnakeCase(g_base_info_get_name(prop))));
+        g_base_info_unref(prop);
+    }
+    return property_list;
+}
+
+NAN_PROPERTY_ENUMERATOR(boxed_property_enumerator_handler) {
+    v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
+    GIBaseInfo *base_info = (GIBaseInfo *)info_ptr->Value();
+    if (base_info == NULL) {
+        info.GetReturnValue().Set(Nan::New<v8::Array>());
+        return;
+    }
+    // TODO: Cache this!
+    auto property_list = getPropertyListForStruct(*base_info);
+    std::sort(property_list.begin(), property_list.end());
+    auto v8_property_list = Nan::New<v8::Array>(property_list.size());
+    int i = 0;
+    for(std::string property_name : property_list) {
+        Nan::Set(v8_property_list, i, UTF8(property_name));
+        i++;
+    }
+    info.GetReturnValue().Set(v8_property_list);
+}
 
 NAN_PROPERTY_QUERY(boxed_property_query_handler) {
     // FIXME: implement this
@@ -35,43 +71,41 @@ NAN_PROPERTY_QUERY(boxed_property_query_handler) {
 }
 
 NAN_PROPERTY_GETTER(boxed_property_get_handler) {
-    String::Utf8Value property_name(property);
-    Isolate *isolate = info.GetIsolate();
+    String::Utf8Value property_name_v8(property);
+    if (*property_name_v8) {
+        std::string property_name = Util::camelCaseToSnakeCase(*property_name_v8);
+        v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
+        GIObjectInfo* object_info = (GIObjectInfo*)info_ptr->Value();
+        if (object_info != NULL) {
+            // TODO: Refactor
+            auto fieldspec = g_struct_info_find_field(object_info, property_name.c_str());
+            if (fieldspec) {
+                Local<Object> boxedWrapper = info.This();
+                if (boxedWrapper->InternalFieldCount() == 0) {
+                    info.GetReturnValue().Set(Nan::Undefined());
+                    return;
+                }
+                void *boxed = GNodeJS::BoxedFromWrapper(boxedWrapper);
+                GIArgument value;
+                if (!g_field_info_get_field(fieldspec, boxed, &value)) {
+                    info.GetReturnValue().Set(Nan::Undefined());
+                    return;
+                }
+                GITypeInfo *field_type = g_field_info_get_type(fieldspec);
+                auto ret = GNodeJS::GIArgumentToV8(field_type, &value);
+                info.GetReturnValue().Set(ret);
+                g_base_info_unref(field_type);
+                return;
+            }
 
-    Local<Object> boxedWrapper = info.This();
-    if (boxedWrapper->InternalFieldCount() == 0) {
-        Nan::ThrowError("StructFieldGetter: instance is not a boxed");
-        return;
-    }
-    void *boxed = GNodeJS::BoxedFromWrapper(boxedWrapper);
-    v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
-    GIBaseInfo *base_info = (GIBaseInfo *)info_ptr->Value();
-    if (base_info != nullptr) {
-        auto fieldspec = g_struct_info_find_field(base_info, *property_name);
-        if (fieldspec) {
-            GIArgument value;
-            if (!g_field_info_get_field(fieldspec, boxed, &value)) {
-                Nan::ThrowError("Unable to get field (complex types not allowed)");
+            GIFunctionInfo* function_info = g_struct_info_find_method(object_info, property_name.c_str());
+            if (function_info != NULL) {
+                info.GetReturnValue().Set(GNodeJS::MakeFunction(function_info));
                 return;
             }
-            GITypeInfo *field_type = g_field_info_get_type(fieldspec);
-            auto ret = GNodeJS::GIArgumentToV8(field_type, &value);
-            info.GetReturnValue().Set(ret);
-            g_base_info_unref(field_type);
-            return;
-        } else {
-            if (strcmp(g_base_info_get_namespace(base_info), "GLib") == 0 && strcmp(g_base_info_get_name(base_info), "MainLoop") == 0) {
-                info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
-                return;
-            }
-            auto methodspec = g_struct_info_find_method(base_info, *property_name);
-            if (methodspec) {
-                info.GetReturnValue().Set(GNodeJS::MakeFunction(methodspec));
-                return;
-            }
+
         }
     }
-    // Fallback to defaults
     info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
 }
 
@@ -324,7 +358,7 @@ Local<FunctionTemplate> GetBoxedTemplate(GIBaseInfo *info, GType gtype) {
                             boxed_property_set_handler,
                             boxed_property_query_handler,
                             nullptr,
-                            nullptr,
+                            boxed_property_enumerator_handler,
                             info_handle);
 
     if (gtype == G_TYPE_NONE)

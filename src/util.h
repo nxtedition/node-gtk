@@ -10,8 +10,11 @@
 #include <node.h>
 #include <girepository.h>
 
-namespace Util
-{
+namespace Util {
+    std::string hyphenCaseToSnakeCase(const std::string& input);
+    std::string snakeCaseToCamelCase(const std::string& input);
+    std::string camelCaseToSnakeCase(std::string &&camelCase);
+
     const char*    ArrayTypeToString (GIArrayType array_type);
     char*          GetSignalName(const char* signal_detail);
 

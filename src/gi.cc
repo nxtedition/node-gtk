@@ -306,7 +306,7 @@ NAN_METHOD(InternalFieldCount) {
 }
 
 NAN_METHOD(GetBaseClass) {
-    auto tpl = GNodeJS::GetBaseClassTemplate ();
+    auto tpl = GNodeJS::GetObjectFunctionRootTemplate ();
     auto fn = tpl->GetFunction();
     info.GetReturnValue().Set(fn);
 }

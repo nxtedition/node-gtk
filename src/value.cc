@@ -33,6 +33,39 @@ static void HashPointerToGIArgument (GIArgument *arg, GITypeInfo *type_info);
 static bool IsUint8Array (GITypeInfo *type_info);
 
 
+Local<Value> GIEnumToV8(GIEnumInfo *interface_info, GIArgument *arg) {
+    auto storage_type_tag = g_enum_info_get_storage_type(interface_info);
+    if (storage_type_tag != NULL) {
+        switch (storage_type_tag) {
+            case GI_TYPE_TAG_VOID:
+                return Nan::Undefined ();
+            case GI_TYPE_TAG_BOOLEAN:
+                return New<Boolean>((bool)arg->v_boolean);
+            case GI_TYPE_TAG_INT32:
+                return New<v8::Int32> (arg->v_int);
+            case GI_TYPE_TAG_UINT32:
+                return New<v8::Uint32> (arg->v_uint);
+            case GI_TYPE_TAG_INT16:
+                return New<v8::Int32> (arg->v_int16);
+            case GI_TYPE_TAG_UINT16:
+                return New<v8::Uint32> (arg->v_uint16);
+            case GI_TYPE_TAG_INT8:
+                return New<v8::Int32> (arg->v_int8);
+            case GI_TYPE_TAG_UINT8:
+                return New<v8::Uint32> (arg->v_uint8);
+            case GI_TYPE_TAG_FLOAT:
+                return New<Number> (arg->v_float);
+            case GI_TYPE_TAG_DOUBLE:
+                return New<Number> (arg->v_double);
+            case GI_TYPE_TAG_INT64:
+                return New<Number> (arg->v_int64);
+            case GI_TYPE_TAG_UINT64:
+                return New<Number> (arg->v_uint64);
+        }
+    }
+    return Nan::Undefined ();
+}
+
 Local<Value> GIArgumentToV8(GITypeInfo *type_info, GIArgument *arg, long length) {
     GITypeTag type_tag = g_type_info_get_tag (type_info);
 
@@ -128,7 +161,7 @@ Local<Value> GIArgumentToV8(GITypeInfo *type_info, GIArgument *arg, long length)
                 break;
             case GI_INFO_TYPE_ENUM:
             case GI_INFO_TYPE_FLAGS:
-                value = New<Number>(arg->v_long);
+                value = GIEnumToV8(interface_info, arg);
                 break;
             case GI_INFO_TYPE_INTERFACE:
                 g_warning ("GIArgumentToV8: Unsuported conversion: from interface. Using null placeholder");
@@ -1204,7 +1237,7 @@ Local<Value> GValueToV8(const GValue *gvalue) {
         g_base_info_unref(info);
         return obj;
     } else {
-        g_assert_not_reached ();
+        return Nan::Null();
     }
 }
 

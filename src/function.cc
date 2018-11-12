@@ -592,22 +592,21 @@ void FunctionInfo::FreeReturnValue (GIArgument *return_value) {
 }
 
 
-
-Local<Function> MakeFunction(GIBaseInfo *info) {
+Local<FunctionTemplate> MakeFunctionTemplate(GIBaseInfo *info) {
     FunctionInfo *func = new FunctionInfo(info);
-
     auto external = New<External>(func);
-    auto name = UTF8(g_function_info_get_symbol (info));
-
     auto tpl = New<FunctionTemplate>(FunctionInvoker, external);
-    tpl->SetLength(g_callable_info_get_n_args (info));
-
-    auto fn = tpl->GetFunction();
-    fn->SetName(name);
-
+    tpl->SetLength(g_callable_info_get_n_args(info));
     Persistent<FunctionTemplate> persistent(Isolate::GetCurrent(), tpl);
     persistent.SetWeak(func, FunctionDestroyed, WeakCallbackType::kParameter);
+    return tpl;
+}
 
+Local<Function> MakeFunction(GIBaseInfo *info) {
+    auto tpl = MakeFunctionTemplate(info);
+    auto name = UTF8(g_function_info_get_symbol(info));
+    auto fn = tpl->GetFunction();
+    fn->SetName(name);
     return fn;
 }
 
