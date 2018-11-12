@@ -36,58 +36,24 @@ static void GObjectDestroyed(const v8::WeakCallbackInfo<GObject> &data);
 
 static Local<v8::FunctionTemplate> GetObjectFunctionTemplate(GIBaseInfo *info);
 
-static bool InitGParameterFromProperty(GParameter    *parameter,
-                                       void          *klass,
-                                       Local<String>  name,
-                                       Local<Value>   value) {
-    Nan::Utf8String name_utf8 (name);
-    GParamSpec *pspec = g_object_class_find_property (G_OBJECT_CLASS (klass), *name_utf8);
-
-    // Ignore additionnal keys in options, thus return true
-    if (pspec == NULL)
-        return true;
-
+static bool InitGParameterFromProperty(GParameter* parameter, GParamSpec *pspec, Local<Value> value) {
+    auto name = g_param_spec_get_name(pspec);
     GType value_type = G_PARAM_SPEC_VALUE_TYPE (pspec);
     parameter->name = pspec->name;
     g_value_init (&parameter->value, value_type);
-
     if (!CanConvertV8ToGValue(&parameter->value, value)) {
-        char* message = g_strdup_printf("Cannot convert value for property \"%s\", expected type %s",
-                *name_utf8, g_type_name(value_type));
+        char* message = g_strdup_printf("Cannot convert value for property \"%s\", expected type %s", name, g_type_name(value_type));
         Nan::ThrowTypeError(message);
         free(message);
         return false;
     }
-
     if (!V8ToGValue (&parameter->value, value)) {
-        char* message = g_strdup_printf("Couldn't convert value for property \"%s\", expected type %s",
-                *name_utf8, g_type_name(value_type));
+        char* message = g_strdup_printf("Couldn't convert value for property \"%s\", expected type %s", name, g_type_name(value_type));
         Nan::ThrowTypeError(message);
         free(message);
         return false;
     }
 
-    return true;
-}
-
-static bool InitGParametersFromProperty(GParameter    **parameters_p,
-                                        int            *n_parameters_p,
-                                        void           *klass,
-                                        Local<Object>  property_hash) {
-    Local<Array> properties = property_hash->GetOwnPropertyNames ();
-    int n_parameters = properties->Length ();
-    GParameter *parameters = g_new0 (GParameter, n_parameters);
-
-    for (int i = 0; i < n_parameters; i++) {
-        Local<String> name = properties->Get(i)->ToString();
-        Local<Value> value = property_hash->Get (name);
-
-        if (!InitGParameterFromProperty (&parameters[i], klass, name->ToString (), value))
-            return false;
-    }
-
-    *parameters_p = parameters;
-    *n_parameters_p = n_parameters;
     return true;
 }
 
@@ -121,61 +87,54 @@ static void AssociateGObject(Isolate *isolate, Local<Object> object, GObject *go
 
 static void GObjectConstructor(const FunctionCallbackInfo<Value> &info) {
     Isolate *isolate = info.GetIsolate ();
-
     /* The flow of this function is a bit twisty.
-
      * There's two cases for when this code is called:
      * user code doing `new Gtk.Widget({ ... })`, and
      * internal code as part of WrapperFromGObject, where
      * the constructor is called with one external. */
     if (!info.IsConstructCall ()) {
-        log("Not a construct call.");
         Nan::ThrowTypeError("Not a construct call.");
         return;
     }
-
     Local<Object> self = info.This ();
-
     if (info[0]->IsExternal ()) {
         /* The External case. This is how WrapperFromGObject is called. */
-        void *data = External::Cast (*info[0])->Value ();
-        GObject *gobject = G_OBJECT (data);
-        AssociateGObject (isolate, self, gobject);
-
-        Nan::DefineOwnProperty(self,
-                Nan::New<String>("__gtype__").ToLocalChecked(),
-                Nan::New<Number>(G_OBJECT_TYPE(gobject)),
-                (v8::PropertyAttribute)(v8::PropertyAttribute::ReadOnly | v8::PropertyAttribute::DontEnum)
+        void *data = External::Cast(*info[0])->Value();
+        GObject *gobject = G_OBJECT(data);
+        AssociateGObject(isolate, self, gobject);
+        Nan::DefineOwnProperty(self, UTF8("__gtype__"), Nan::New<Number>(G_OBJECT_TYPE(gobject)), (v8::PropertyAttribute)(v8::PropertyAttribute::ReadOnly | v8::PropertyAttribute::DontEnum)
         );
     } else {
         /* User code calling `new Gtk.Widget({ ... })` */
-
+//        log("ConstructCall");
         GObject *gobject;
-        GIBaseInfo *gi_info = (GIBaseInfo *) External::Cast (*info.Data ())->Value ();
-        GType gtype = g_registered_type_info_get_g_type ((GIRegisteredTypeInfo *) gi_info);
-        void *klass = g_type_class_ref (gtype);
+        GIBaseInfo *gi_info = (GIBaseInfo *) External::Cast(*info.Data ())->Value();
+//        log("  %s", g_base_info_get_name(gi_info));
+        GType gtype = g_registered_type_info_get_g_type((GIRegisteredTypeInfo *) gi_info);
+        void *klass = g_type_class_ref(gtype);
 
-        GParameter *parameters = NULL;
-        int n_parameters = 0;
+        guint n_properties = 0;
+        auto properties = g_object_class_list_properties(G_OBJECT_CLASS(klass), &n_properties);
 
-        if (info[0]->IsObject ()) {
-            Local<Object> property_hash = info[0]->ToObject ();
-
-            if (!InitGParametersFromProperty (&parameters, &n_parameters, klass, property_hash)) {
-                // Error will already be thrown from InitGParametersFromProperty
-                goto out;
+        int n_parameters = info.Length();
+        GParameter *parameters = g_new0(GParameter, n_parameters);
+        for (int i = 0; i < n_parameters; i++) {
+            v8::String::Utf8Value typeOf(info.GetIsolate(), info[i]->TypeOf(info.GetIsolate()));
+//            log("  [%d] typeOf: %s", i, *typeOf);
+            if (properties[i]) {
+//                log("    %s", g_param_spec_get_name(properties[i]));
+                if (!InitGParameterFromProperty(&parameters[i], properties[i], info[i])) {
+                    // Not sure what to do here yet
+                }
             }
         }
-
-        gobject = (GObject *) g_object_newv (gtype, n_parameters, parameters);
-        AssociateGObject (isolate, self, gobject);
-
-        Nan::DefineOwnProperty(self,
-                UTF8("__gtype__"),
-                Nan::New<Number>(gtype),
-                (v8::PropertyAttribute)(v8::PropertyAttribute::ReadOnly | v8::PropertyAttribute::DontEnum)
+        g_free(properties);
+//        log("  n_parameters: %d", n_parameters);
+//        log("  n_properties: %d", n_properties);
+        gobject = (GObject *) g_object_newv(gtype, n_parameters, parameters);
+        AssociateGObject(isolate, self, gobject);
+        Nan::DefineOwnProperty(self, UTF8("__gtype__"), Nan::New<Number>(gtype), (v8::PropertyAttribute)(v8::PropertyAttribute::ReadOnly | v8::PropertyAttribute::DontEnum)
         );
-
     out:
         g_free (parameters);
         g_type_class_unref (klass);
@@ -451,17 +410,6 @@ NAN_PROPERTY_GETTER(property_get_handler) {
         v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
         GIObjectInfo* object_info = (GIObjectInfo*)info_ptr->Value();
         if (object_info != NULL) {
-            /*if (strcmp(*property_name_v8, "constructor") == 0) {
-                v8::Handle<v8::External> info_ptr = v8::Handle<v8::External>::Cast(info.Data());
-                GIObjectInfo* object_info = (GIObjectInfo*)info_ptr->Value();
-                log("constructor: %s", g_base_info_get_name(object_info));
-                auto tpl = GetObjectFunctionTemplate(object_info);
-                //Local<Function> constructor = tpl->GetFunction();
-                //Local<Value> args[] = { info_ptr };
-                //Local<Object> obj = Nan::NewInstance(constructor, 1, args).ToLocalChecked();
-                info.GetReturnValue().Set(tpl->GetFunction());
-                return;
-            }*/
             if (strcmp(*property_name_v8, "__gtype__") == 0) {
                 GObject *gobject = GNodeJS::GObjectFromWrapper(info.This()->ToObject());
                 info.GetReturnValue().Set(Nan::New<Number>(G_OBJECT_TYPE(gobject)));
@@ -500,7 +448,6 @@ NAN_PROPERTY_GETTER(property_get_handler) {
 
         }
     }
-    //log("default %s", *property_name_v8);
     info.GetReturnValue().Set(info.This()->GetPrototype()->ToObject()->Get(property));
 }
 
@@ -545,23 +492,17 @@ Local<FunctionTemplate> GetObjectFunctionRootTemplate() {
     return tpl;
 }
 
-static Local<FunctionTemplate> NewFunctionTemplate (GIBaseInfo *info, GType gtype) {
+static Local<FunctionTemplate> NewFunctionTemplate(GIBaseInfo *info, GType gtype) {
     g_assert(gtype != G_TYPE_NONE);
 
-    const char *class_name = g_type_name (gtype);
+    const char *class_name = g_type_name(gtype);
 
-    auto tpl = New<FunctionTemplate> (GObjectConstructor, New<External> (info));
-    tpl->SetClassName (UTF8(class_name));
+    auto tpl = New<FunctionTemplate>(GObjectConstructor, New<External>(info));
+    tpl->SetClassName(UTF8(class_name));
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
     v8::Handle<v8::External> info_handle = Nan::New<v8::External>((void *)g_base_info_ref(info));
-    Nan::SetNamedPropertyHandler(tpl->InstanceTemplate(),
-                            property_get_handler,
-                            property_set_handler,
-                            property_query_handler,
-                            nullptr,
-                            property_enumerator_handler,
-                            info_handle);
+    Nan::SetNamedPropertyHandler(tpl->InstanceTemplate(), property_get_handler, property_set_handler, property_query_handler, nullptr, property_enumerator_handler, info_handle);
 
     // This is so we can access static methods, not sure if there are static properties to add...
     int num_methods = g_object_info_get_n_methods(info);
@@ -585,53 +526,48 @@ static Local<FunctionTemplate> NewFunctionTemplate (GIBaseInfo *info, GType gtyp
 
 static Local<v8::FunctionTemplate> GetObjectFunctionTemplate(GIBaseInfo *gi_info) {
     GType gtype = g_registered_type_info_get_g_type ((GIRegisteredTypeInfo *) gi_info);
-/*    void *data = g_type_get_qdata (gtype, GNodeJS::template_quark());
+    void *data = g_type_get_qdata (gtype, GNodeJS::template_quark());
     if (data) {
         auto *persistent = (Persistent<FunctionTemplate> *) data;
         auto tpl = New<FunctionTemplate> (*persistent);
         return tpl;
-    }*/
+    }
     if (gi_info == NULL) {
         gi_info = g_irepository_find_by_gtype(NULL, gtype);
     }
     assert_printf (gi_info != NULL, "Missing GIR info for: %s\n", g_type_name (gtype));
     auto tpl = NewFunctionTemplate(gi_info, gtype);
-
     auto *persistent = new Persistent<FunctionTemplate>(Isolate::GetCurrent(), tpl);
     persistent->SetWeak(
             g_base_info_ref(gi_info),
             GNodeJS::ClassDestroyed,
             WeakCallbackType::kParameter);
-    //g_type_set_qdata(gtype, GNodeJS::template_quark(), persistent);
+    g_type_set_qdata(gtype, GNodeJS::template_quark(), persistent);
     return tpl;
 }
 
-Local<Object> MakeClass(GIBaseInfo *info) {
-    //log("MakeClass %s", g_base_info_get_name(info));
-    auto tpl = GetObjectFunctionTemplate(info);
-    return Nan::GetFunction(tpl).ToLocalChecked();
+Local<Object> MakeClass(GIBaseInfo *object_info) {
+    //log("MakeClass %s", g_base_info_get_name(object_info));
+    auto tpl = GetObjectFunctionTemplate(object_info);
+    return tpl->GetFunction();
 }
 
 Local<Value> WrapperFromGObject(GObject *gobject, GIBaseInfo *object_info) {
     //log("WrapperFromGObject %s", g_base_info_get_name(object_info));
-    if (gobject == NULL)
+    if (gobject == NULL) {
         return Nan::Null();
-
-    void *data = g_object_get_qdata (gobject, GNodeJS::object_quark());
-
+    }
+    void *data = g_object_get_qdata(gobject, GNodeJS::object_quark());
     if (data) {
-        /* Easy case: we already have an object. */
         auto *persistent = (Persistent<Object> *) data;
-        auto obj = New<Object> (*persistent);
+        auto obj = New<Object>(*persistent);
         return obj;
-
     } else {
         auto tpl = GetObjectFunctionTemplate(object_info);
         Local<Function> constructor = tpl->GetFunction();
-        Local<Value> gobject_external = New<External> (gobject);
+        Local<Value> gobject_external = New<External>(gobject);
         Local<Value> args[] = { gobject_external };
         Local<Object> obj = Nan::NewInstance(constructor, 1, args).ToLocalChecked();
-
         return obj;
     }
 }
